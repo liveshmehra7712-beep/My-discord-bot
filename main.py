@@ -1,27 +1,27 @@
+import os
+from threading import Thread
+from flask import Flask
 import discord
 from discord.ext import commands, tasks
 import random
 import asyncio
 import re
 import time
-import os
 from datetime import datetime, timedelta
-from flask import Flask
-from threading import Thread
 
-# ================= 🌐 WEBSERVER FOR RENDER FREE PLAN =================
+# ================= 🌐 KEEP ALIVE FLASK SERVER (For Render 24/7) =================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot 24/7 Alive Hai!"
+    return "Bot is alive and running 24/7!"
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_web)
+    t = Thread(target=run_flask)
     t.start()
 
 # ================= 🤖 DISCORD BOT SETUP =================
@@ -253,8 +253,8 @@ async def guess(ctx, num: int):
     res = "🎉 Correct!" if num == secret else f"❌ Wrong! Number was {secret}"
     await ctx.send(res)
 
-@bot.command(name="8ball")
-async def eight_ball(ctx, *, q: str):
+@bot.command()
+async def 8ball(ctx, *, q: str):
     ans = ["Yes", "No", "Definitely", "Ask later", "Never"]
     await ctx.send(f"🎱 Question: {q}\nAnswer: {random.choice(ans)}")
 
@@ -431,9 +431,11 @@ async def coin(ctx): await ctx.send("🪙 Multi-currency coin system ready.")
 @bot.command()
 async def support(ctx): await ctx.send("🛠️ Support Server: Reach out to owners for help.")
 
-# Start Web Server & Bot
-keep_alive()
-
-# Purani line (bot.run('...')) ko hata kar ye likhein:
-bot.run(os.environ.get("DISCORD_TOKEN"))
-
+# ================= 🚀 MAIN RUNNER =================
+if __name__ == "__main__":
+    keep_alive()
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("❌ Error: DISCORD_TOKEN Environment Variable nahi mila!")
