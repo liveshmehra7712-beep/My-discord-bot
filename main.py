@@ -253,8 +253,9 @@ async def guess(ctx, num: int):
     res = "🎉 Correct!" if num == secret else f"❌ Wrong! Number was {secret}"
     await ctx.send(res)
 
-@bot.command()
-async def 8ball(ctx, *, q: str):
+# FIX: Python function name starts with text now, command command call will still be $8ball
+@bot.command(name="8ball")
+async def eight_ball(ctx, *, q: str):
     ans = ["Yes", "No", "Definitely", "Ask later", "Never"]
     await ctx.send(f"🎱 Question: {q}\nAnswer: {random.choice(ans)}")
 
@@ -434,5 +435,5 @@ async def support(ctx): await ctx.send("🛠️ Support Server: Reach out to own
 # Start Web Server & Bot
 keep_alive()
 
-# ⚠️ YAHAN APNA REAL DISCORD BOT TOKEN DAALEIN
+# ⚠️ TOKEN DAALEIN APNA DISCORD BOT KA
 bot.run('MTU1MjIxNzA0NTEzODAxODMyNA.G1RZrW.cECd8WE1BmZ9cpHQwqIAgIz1E-ktjXxebpFKhU')
