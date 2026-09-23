@@ -253,8 +253,8 @@ async def guess(ctx, num: int):
     res = "🎉 Correct!" if num == secret else f"❌ Wrong! Number was {secret}"
     await ctx.send(res)
 
-@bot.command()
-async def 8ball(ctx, *, q: str):
+@bot.command(name="8ball")
+async def eight_ball(ctx, *, q: str):
     ans = ["Yes", "No", "Definitely", "Ask later", "Never"]
     await ctx.send(f"🎱 Question: {q}\nAnswer: {random.choice(ans)}")
 
