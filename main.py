@@ -8,6 +8,7 @@ from threading import Thread
 from flask import Flask
 import discord
 from discord.ext import commands, tasks
+from discord.ui import Button, View, Select
 
 # ================= 🌐 KEEP ALIVE SERVER =================
 app = Flask('')
@@ -69,12 +70,11 @@ async def self_ping():
 @bot.event
 async def on_ready():
     print(f"✅ BOT ONLINE: {bot.user.name} ({bot.user.id})")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="$help | 24/7 Active"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="$help | MID Next-Gen 🚀"))
     
     if not self_ping.is_running():
         self_ping.start()
 
-    # Cache Server Invites for Invite Tracking
     for guild in bot.guilds:
         try:
             invites_cache[guild.id] = await guild.invites()
@@ -84,15 +84,99 @@ async def on_ready():
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"⚠️ Missing required argument! Usage: `{ctx.prefix}{ctx.command.name} {ctx.command.signature}`")
+        await ctx.send(f"⚠️ **Syntax Error:** `{ctx.prefix}{ctx.command.name} {ctx.command.signature}`")
     elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ **Access Denied:** Aapke paas is admin/unsafe command ko chalane ke permissions nahi hain!")
+        await ctx.send("❌ **Access Denied:** Aapke paas permissions nahi hain bro!")
     elif isinstance(error, commands.MemberNotFound):
         await ctx.send("❌ Mentioned member server me nahi mila!")
     elif isinstance(error, commands.BotMissingPermissions):
-        await ctx.send("❌ Mere paas is command ko chalane ke permissions (Admin/Manage Server) nahi hain!")
+        await ctx.send("❌ Mere paas required permissions (Admin/Manage Roles/Channels) nahi hain!")
     else:
-        print(f"Error executing {ctx.command}: {error}")
+        print(f"Error: {error}")
+
+# ================= 🎫 R.O.T.I STYLE TICKET SYSTEM =================
+class TicketControlView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket 🔒", style=discord.ButtonStyle.red, custom_id="close_ticket_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message("🔒 Ticket 5 seconds me close ho raha hai...", ephemeral=True)
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+    @discord.ui.button(label="Claim Ticket 🛡️", style=discord.ButtonStyle.green, custom_id="claim_ticket_btn")
+    async def claim_ticket(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("❌ Support team members hi ticket claim kar sakte hain!", ephemeral=True)
+            return
+        
+        emb = discord.Embed(
+            description=f"✅ **Ticket claimed by {interaction.user.mention}!**\nAb ye staff member aapki help karenge.",
+            color=0x2ecc71
+        )
+        await interaction.response.send_message(embed=emb)
+
+class TicketLaunchView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Create Ticket 📩", style=discord.ButtonStyle.blurple, custom_id="create_ticket_btn")
+    async def create_ticket(self, interaction: discord.Interaction, button: Button):
+        guild = interaction.guild
+        cat_id = ticket_category_db.get(guild.id)
+        category = guild.get_channel(cat_id) if cat_id else None
+        
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        
+        ch = await guild.create_text_channel(name=f"ticket-{interaction.user.name}", category=category, overwrites=overwrites)
+        
+        emb = discord.Embed(
+            title="🎫 Welcome to Support!",
+            description=f"Hey {interaction.user.mention}, apni query yahan drop karo.\nStaff team bohot jaldi response karegi!",
+            color=0x3498db
+        )
+        emb.set_footer(text="MID Ticket System • R.O.T.I Style UI")
+        
+        await ch.send(content=f"{interaction.user.mention}", embed=emb, view=TicketControlView())
+        await interaction.response.send_message(f"✅ Ticket ban gaya hai: {ch.mention}", ephemeral=True)
+
+# ================= 📜 INTERACTIVE DROPDOWN $HELP MENU =================
+class HelpDropdown(Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Moderation", description="Ban, Kick, Mute, Warn commands", emoji="🛡️"),
+            discord.SelectOption(label="Admin & Setup", description="Nuke, Ticket, Welcome, Roles", emoji="👑"),
+            discord.SelectOption(label="Games & Economy", description="Roll, Slots, RPS, Coinflip", emoji="🎮"),
+            discord.SelectOption(label="Fun & Utility", description="Avatar, Ping, Custom Tag, AFK", emoji="🎭"),
+        ]
+        super().__init__(placeholder="⚡ Command Category Select Karo...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Moderation":
+            emb = discord.Embed(title="🛡️ Moderation Commands", color=0xe74c3c)
+            emb.description = "`$ban`, `$unban`, `$kick`, `$mute`, `$unmute`, `$warn`, `$warnings`, `$clearwarns`, `$purge`, `$slowmode`, `$lock`, `$unlock`, `$addrole`, `$removerole`"
+        elif self.values[0] == "Admin & Setup":
+            emb = discord.Embed(title="👑 Admin Commands", color=0xf1c40f)
+            emb.description = "`$nuke`, `$setnick`, `$customtag`, `$setwelcome`, `$setgoodbye`, `$setautorole`, `$setlogs`, `$poll`, `$embed`, `$serverlock`, `$serverunlock`, `$announcement`, `$botnick`, `$say`, `$ticketsetup`, `$dmall`"
+        elif self.values[0] == "Games & Economy":
+            emb = discord.Embed(title="🎮 Games Commands", color=0x2ecc71)
+            emb.description = "`$roll`, `$toss`, `$rps`, `$slots`, `$guess`, `$8ball`, `$dice`, `$coinflip`, `$mathquiz`, `$fasttype`"
+        elif self.values[0] == "Fun & Utility":
+            emb = discord.Embed(title="🎭 Fun & Utility Commands", color=0x9b59b6)
+            emb.description = "`$ping`, `$avatar`, `$userinfo`, `$serverinfo`, `$afk`, `$hack`, `$chat`"
+        
+        emb.set_footer(text="MID Bot • Next-Gen Panel")
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+class HelpView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(HelpDropdown())
 
 # ================= 👥 INVITE TRACKER & WELCOME EVENT =================
 @bot.event
@@ -100,7 +184,6 @@ async def on_member_join(member):
     guild = member.guild
     inviter_text = "Unknown Inviter"
 
-    # Invite Tracking Logic
     if guild.id in invites_cache:
         try:
             old_invites = invites_cache[guild.id]
@@ -114,14 +197,12 @@ async def on_member_join(member):
         except Exception:
             pass
 
-    # Auto Role
     if guild.id in autorole_db:
         role = guild.get_role(autorole_db[guild.id])
         if role:
             try: await member.add_roles(role)
             except: pass
 
-    # Welcome Message
     if guild.id in welcome_db:
         ch = guild.get_channel(welcome_db[guild.id])
         if ch:
@@ -141,7 +222,7 @@ async def on_member_remove(member):
         if ch:
             await ch.send(f"👋 Goodbye **{member.name}**, hope to see you again!")
 
-# ================= 🛡️ AUTOMOD & CHAT SYSTEM =================
+# ================= 🛡️ AUTOMOD & FRIENDLY CHAT SYSTEM =================
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
@@ -163,58 +244,73 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # Trigger Smart AI Chat: On Bot Mention OR "MID" / "mid" keyword
+    # Friendly Hinglish AI Chat on MID Trigger
     if bot.user.mentioned_in(message) or "mid" in content.lower().split():
-        chat_responses = [
-            f"Haan ji {message.author.mention}, bataiye kya help chahiye?",
-            "Mid Bot yahan hai! Main aapke server ki security aur moderation handle kar raha hu.",
-            "Aapne yaad kiya aur MID haazir ho gaya! Type `$help` for commands list.",
-            "Server full active aur safe hai! Main 24/7 online hoon.",
-            "Namaste! Main MID Discord Bot hoon. Sab badhiya chal raha hai?"
+        friendly_responses = [
+            f"How can I help u bro? Bolo kya scene hai {message.author.mention}? 😎",
+            f"Haan bhai {message.author.mention}, batao kya help chahiye?",
+            f"Yo {message.author.mention}! Bot full active hai, bolo kya kaam hai?",
+            "Kaise ho bhai? Main ekdam mast hu, batao aaj kya plan hai?",
+            f"Arey {message.author.mention} bhai! Chill maar, MID tere saath hai!⚡"
         ]
-        await message.channel.send(random.choice(chat_responses))
+        await message.channel.send(random.choice(friendly_responses))
         return
 
     # Automod Checks for Non-Admins
     if not message.author.guild_permissions.administrator:
         now = time.time()
         
-        # Anti-Spam
         if AUTOMOD_CONFIG["anti_spam"]:
             if author_id not in message_track: message_track[author_id] = []
             message_track[author_id].append(now)
             message_track[author_id] = [t for t in message_track[author_id] if now - t < 4]
             if len(message_track[author_id]) > 5:
                 await message.delete()
-                await message.channel.send(f"🚨 {message.author.mention}, spam mat karo!", delete_after=3)
+                await message.channel.send(f"🚨 {message.author.mention}, spam mat karo bhai!", delete_after=3)
                 return
 
-        # Bad Words
         if any(word in content.lower() for word in AUTOMOD_CONFIG["badwords"]):
             await message.delete()
-            await message.channel.send(f"🚫 Abuse/Bad words yahan allowed nahi hain!", delete_after=3)
+            await message.channel.send(f"🚫 Bad words yahan allowed nahi hain!", delete_after=3)
             return
 
-        # Anti-Link
         if AUTOMOD_CONFIG["anti_link"] and ("http://" in content or "https://" in content or "discord.gg/" in content):
             await message.delete()
-            await message.channel.send(f"🔗 Server par links allow nahi hain!", delete_after=3)
+            await message.channel.send(f"🔗 Links allow nahi hain bro!", delete_after=3)
             return
-
-        # Mass Mention
-        if AUTOMOD_CONFIG["anti_massmention"] and len(message.mentions) > 3:
-            await message.delete()
-            await message.channel.send(f"🚨 Mass mentions block kar diye gaye hain!", delete_after=3)
-            return
-
-    # Custom Command Trigger
-    if content in custom_cmds:
-        await message.channel.send(custom_cmds[content])
-        return
 
     await bot.process_commands(message)
 
-# ================= 👑 SAFE & WORKING ADMIN COMMANDS (20+) =================
+# ================= 👑 ADMIN COMMANDS & CUSTOM TAGS =================
+@bot.command()
+@commands.has_permissions(manage_nicknames=True)
+async def setnick(ctx, member: discord.Member, *, nickname: str):
+    await member.edit(nick=nickname)
+    await ctx.send(f"✅ **{member.name}** ka nickname badal kar **{nickname}** kar diya!")
+
+@bot.command()
+@commands.has_permissions(manage_nicknames=True)
+async def customtag(ctx, member: discord.Member, tag: str):
+    new_nick = f"[{tag}] {member.display_name}"
+    await member.edit(nick=new_nick)
+    await ctx.send(f"🚀 **{member.mention}** ko custom tag mil gaya: `{new_nick}`")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def ticketsetup(ctx):
+    category = await ctx.guild.create_category("📩 TICKETS")
+    ticket_category_db[ctx.guild.id] = category.id
+    
+    emb = discord.Embed(
+        title="🎫 Support Ticket Center",
+        description="Aapko koi help chahiye ya support team se baat karni hai?\nNiche button par click karke ticket open karein!",
+        color=0x00ffff
+    )
+    emb.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
+    emb.set_footer(text="MID Ticket System • R.O.T.I Style")
+    
+    await ctx.send(embed=emb, view=TicketLaunchView())
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def nuke(ctx):
@@ -222,7 +318,7 @@ async def nuke(ctx):
     new_ch = await ctx.channel.clone(reason="Nuke Channel")
     await ctx.channel.delete()
     await new_ch.edit(position=pos)
-    await new_ch.send("💥 Channel successfully nuke ho gaya aur reset kar diya gaya!")
+    await new_ch.send("💥 **Channel reset kar diya gaya hai!**")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -242,155 +338,28 @@ async def setautorole(ctx, role: discord.Role):
     autorole_db[ctx.guild.id] = role.id
     await ctx.send(f"✅ Auto-role set: `{role.name}`")
 
+# ================= 🛡️ MODERATION COMMANDS =================
 @bot.command()
-@commands.has_permissions(administrator=True)
-async def setlogs(ctx, ch: discord.TextChannel):
-    logs_db[ctx.guild.id] = ch.id
-    await ctx.send(f"✅ Logs channel set: {ch.mention}")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def poll(ctx, *, question: str):
-    emb = discord.Embed(title="📊 Server Poll", description=question, color=0x00ffff)
-    msg = await ctx.send(embed=emb)
-    await msg.add_reaction("👍")
-    await msg.add_reaction("👎")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def embed(ctx, title: str, *, description: str):
-    emb = discord.Embed(title=title, description=description, color=0x3498db)
-    await ctx.send(embed=emb)
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def serverlock(ctx):
-    for ch in ctx.guild.text_channels:
-        await ch.set_permissions(ctx.guild.default_role, send_messages=False)
-    await ctx.send("🔒 Poora server successfully lock ho gaya!")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def serverunlock(ctx):
-    for ch in ctx.guild.text_channels:
-        await ch.set_permissions(ctx.guild.default_role, send_messages=True)
-    await ctx.send("🔓 Server unlock kar diya gaya hai!")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def announcement(ctx, *, text: str):
-    emb = discord.Embed(title="📢 Official Announcement", description=text, color=0xe74c3c)
-    await ctx.send("@everyone", embed=emb)
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def botnick(ctx, *, nick: str):
-    await ctx.guild.me.edit(nick=nick)
-    await ctx.send(f"✅ Bot ka nickname badal kar **{nick}** kar diya!")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def say(ctx, *, message: str):
-    await ctx.message.delete()
-    await ctx.send(message)
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def createchannel(ctx, *, name: str):
-    ch = await ctx.guild.create_text_channel(name)
-    await ctx.send(f"✅ Text channel ban gaya: {ch.mention}")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def deletechannel(ctx, ch: discord.TextChannel):
-    await ch.delete()
-    await ctx.send("🗑️ Channel delete kar diya gaya!")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def createrole(ctx, *, name: str):
-    role = await ctx.guild.create_role(name=name)
-    await ctx.send(f"✅ Role create ho gaya: `{role.name}`")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def deleterole(ctx, role: discord.Role):
-    await role.delete()
-    await ctx.send(f"🗑️ Role `{role.name}` delete kar diya gaya!")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def massrole(ctx, role: discord.Role):
-    await ctx.send(f"⚙️ Sabhi members ko `{role.name}` role diya ja raha hai...")
-    count = 0
-    for m in ctx.guild.members:
-        if not m.bot:
-            try:
-                await m.add_roles(role)
-                count += 1
-            except: pass
-    await ctx.send(f"✅ Completed! {count} members ko role mil gaya.")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def ticketsetup(ctx):
-    category = await ctx.guild.create_category("📩 TICKETS")
-    ticket_category_db[ctx.guild.id] = category.id
-    emb = discord.Embed(
-        title="🎫 Support Ticket System",
-        description="Ticket open karne ke liye niche `$openticket` type karein!",
-        color=0x2ecc71
-    )
-    await ctx.send(embed=emb)
-
-@bot.command()
-async def openticket(ctx):
-    guild = ctx.guild
-    cat_id = ticket_category_db.get(guild.id)
-    category = guild.get_channel(cat_id) if cat_id else None
+@commands.has_permissions(manage_messages=True)
+async def warn(ctx, member: discord.Member, *, reason="None"):
+    warnings_db[member.id] = warnings_db.get(member.id, 0) + 1
+    current_warns = warnings_db[member.id]
     
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        ctx.author: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-    }
-    
-    ch = await guild.create_text_channel(name=f"ticket-{ctx.author.name}", category=category, overwrites=overwrites)
-    await ch.send(f"🎫 Welcome {ctx.author.mention}! Support team aapse jaldi contact karegi.\nClose karne ke liye `$closeticket` likhein.")
-    await ctx.send(f"✅ Aapka ticket channel create ho gaya: {ch.mention}", delete_after=5)
-
-@bot.command()
-async def closeticket(ctx):
-    if "ticket-" in ctx.channel.name:
-        await ctx.send("🔒 Ticket 5 seconds me close ho raha hai...")
-        await asyncio.sleep(5)
-        await ctx.channel.delete()
+    if current_warns >= 3:
+        try:
+            await member.timeout(timedelta(minutes=20), reason="Reached 3 Warnings")
+            warnings_db[member.id] = 0
+            await ctx.send(f"🚨 **{member.mention} ko 3 Warnings hone par 20 minutes Timeout de diya gaya hai!**")
+        except Exception:
+            await ctx.send(f"⚠️ 3 warnings ho gaye hain, lekin permissions lack hone se timeout nahi laga.")
     else:
-        await ctx.send("❌ Yeh command sirf ticket channel me use ki ja sakti hai!")
+        await ctx.send(f"⚠️ **{member.name}** ko warn kiya gaya! (Warnings: **{current_warns}/3**) | Reason: {reason}")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def dmall(ctx, *, message: str):
-    await ctx.send("📩 Direct messaging process start kar diya gaya hai...")
-    for m in ctx.guild.members:
-        if not m.bot:
-            try: await m.send(f"📢 **{ctx.guild.name}:** {message}")
-            except: pass
-    await ctx.send("✅ DM process complete ho gaya!")
-
-# ================= 🛡️ MODERATION COMMANDS (14) =================
 @bot.command()
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason="None"):
     await member.ban(reason=reason)
     await ctx.send(f"🔨 Banned **{member.name}** | Reason: {reason}")
-
-@bot.command()
-@commands.has_permissions(ban_members=True)
-async def unban(ctx, user_id: int):
-    user = await bot.fetch_user(user_id)
-    await ctx.guild.unban(user)
-    await ctx.send(f"🔓 Unbanned **{user.name}**")
 
 @bot.command()
 @commands.has_permissions(kick_members=True)
@@ -405,87 +374,12 @@ async def mute(ctx, member: discord.Member, minutes: int = 10, *, reason="None")
     await ctx.send(f"⏱️ Muted **{member.name}** for {minutes}m.")
 
 @bot.command()
-@commands.has_permissions(moderate_members=True)
-async def unmute(ctx, member: discord.Member):
-    await member.timeout(None)
-    await ctx.send(f"🔊 Unmuted **{member.name}**")
-
-@bot.command()
-@commands.has_permissions(manage_messages=True)
-async def warn(ctx, member: discord.Member, *, reason="None"):
-    warnings_db[member.id] = warnings_db.get(member.id, 0) + 1
-    current_warns = warnings_db[member.id]
-    
-    if current_warns >= 3:
-        try:
-            await member.timeout(timedelta(minutes=20), reason="Reached 3 Warnings")
-            warnings_db[member.id] = 0
-            await ctx.send(
-                f"🚨 **{member.mention} ko 3 Warnings milne par 20 minutes ke liye Timeout (Mute) kar diya gaya hai!**\n"
-                f"Reason: {reason}"
-            )
-        except Exception:
-            await ctx.send(f"⚠️ **{member.name}** ke 3 warnings ho gaye hain, lekin permissions lack hone ki wajah se timeout nahi lag sakka.")
-    else:
-        await ctx.send(f"⚠️ **{member.name}** ko warn kiya gaya! (Total Warnings: **{current_warns}/3**) | Reason: {reason}")
-
-@bot.command()
-async def warnings(ctx, member: discord.Member):
-    await ctx.send(f"📋 **{member.name}** ke total {warnings_db.get(member.id, 0)} warnings hain.")
-
-@bot.command()
-@commands.has_permissions(manage_messages=True)
-async def clearwarns(ctx, member: discord.Member):
-    warnings_db[member.id] = 0
-    await ctx.send(f"🧹 **{member.name}** ke warnings clear kar diye gaye hain.")
-
-@bot.command()
 @commands.has_permissions(manage_messages=True)
 async def purge(ctx, amount: int = 10):
     await ctx.channel.purge(limit=amount + 1)
     await ctx.send(f"🧹 Cleared {amount} messages!", delete_after=3)
 
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def slowmode(ctx, seconds: int):
-    await ctx.channel.edit(slowmode_delay=seconds)
-    await ctx.send(f"⏳ Slowmode set to {seconds} seconds.")
-
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def lock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-    await ctx.send("🔒 Channel locked.")
-
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def unlock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-    await ctx.send("🔓 Channel unlocked.")
-
-@bot.command()
-@commands.has_permissions(manage_roles=True)
-async def addrole(ctx, member: discord.Member, role: discord.Role):
-    await member.add_roles(role)
-    await ctx.send(f"✅ `{role.name}` role **{member.name}** ko de diya gaya.")
-
-@bot.command()
-@commands.has_permissions(manage_roles=True)
-async def removerole(ctx, member: discord.Member, role: discord.Role):
-    await member.remove_roles(role)
-    await ctx.send(f"❌ `{role.name}` role **{member.name}** se hata diya gaya.")
-
-# ================= 🎭 SAFE FUN & UTILITY =================
-@bot.command()
-async def hack(ctx, member: discord.Member):
-    msg = await ctx.send(f"💻 Initiating fun simulation scan on **{member.name}**...")
-    await asyncio.sleep(1)
-    await msg.edit(content=f"🔍 Reading favorite emoji...")
-    await asyncio.sleep(1)
-    await msg.edit(content=f"🎮 Calculating gaming skill score... 99.9%")
-    await asyncio.sleep(1)
-    await msg.edit(content=f"🎉 **Fun Scan Complete:** {member.mention} is officially 100% Awesome!")
-
+# ================= 🎭 FUN, UTILITY & GAMES =================
 @bot.command()
 async def ping(ctx):
     await ctx.send(f"🏓 Pong! Latency: **{round(bot.latency * 1000)}ms**")
@@ -496,24 +390,10 @@ async def avatar(ctx, member: discord.Member = None):
     await ctx.send(m.display_avatar.url)
 
 @bot.command()
-async def userinfo(ctx, member: discord.Member = None):
-    m = member or ctx.author
-    await ctx.send(f"👤 Name: **{m.name}** | ID: `{m.id}` | Joined: `{m.joined_at.strftime('%Y-%m-%d')}`")
-
-@bot.command()
-async def serverinfo(ctx):
-    await ctx.send(f"🏰 **Server Name:** {ctx.guild.name}\n👥 **Total Members:** {ctx.guild.member_count}")
-
-@bot.command()
 async def afk(ctx, *, reason="AFK"):
     afk_users[ctx.author.id] = reason
     await ctx.send(f"💤 {ctx.author.mention} ab AFK hai: {reason}")
 
-@bot.command()
-async def chat(ctx, *, message: str):
-    await ctx.send(f"🤖 **MID:** Aapne bola '{message}'. Server me sab smooth chal raha hai!")
-
-# ================= 🎮 GAMES (10) =================
 @bot.command()
 async def roll(ctx): await ctx.send(f"🎲 Rolled: **{random.randint(1, 6)}**")
 
@@ -521,58 +401,24 @@ async def roll(ctx): await ctx.send(f"🎲 Rolled: **{random.randint(1, 6)}**")
 async def toss(ctx): await ctx.send(f"🪙 Coin Result: **{random.choice(['Heads', 'Tails'])}**")
 
 @bot.command()
-async def rps(ctx, choice: str):
-    bot_choice = random.choice(["rock", "paper", "scissors"])
-    await ctx.send(f"🎮 Aap: `{choice}` | Bot: `{bot_choice}`")
-
-@bot.command()
 async def slots(ctx):
     e = ["🍎", "🍋", "🍒"]
     a, b, c = random.choice(e), random.choice(e), random.choice(e)
     await ctx.send(f"[ {a} | {b} | {c} ] -> {'🎉 WIN!' if a==b==c else '❌ Try Again!'}")
 
-@bot.command()
-async def guess(ctx, n: int): await ctx.send("🎉 Right Guess!" if n == random.randint(1, 3) else "❌ Wrong Guess!")
-
-@bot.command(name="8ball")
-async def eightball(ctx, *, q: str): await ctx.send(f"🎱 Answer: **{random.choice(['Yes', 'No', 'Never', 'Definitely'])}**")
-
-@bot.command()
-async def dice(ctx): await ctx.send(f"🎲 Dice: **{random.randint(1, 20)}**")
-
-@bot.command()
-async def coinflip(ctx): await ctx.send(f"🪙 Coin: **{random.choice(['Heads', 'Tails'])}**")
-
-@bot.command()
-async def mathquiz(ctx): await ctx.send("🧮 What is 12 x 12? (Answer: 144)")
-
-@bot.command()
-async def fasttype(ctx): await ctx.send("⚡ Fast Type: `MIDBOT247`")
-
-# ================= 📜 HELP SYSTEM =================
+# ================= 📜 MASTER $HELP COMMAND =================
 @bot.command(name="help")
-async def help_cmd(ctx, category: str = None):
-    if category is None:
-        emb = discord.Embed(title="🤖 MID Discord Bot Master Help", description="Categories list view karne ke liye `$help <category>` likhein.\nExample: `$help admin` or `$help mod`", color=0x00ffff)
-        emb.add_field(name="🛡️ Moderation (14)", value="`$help mod`", inline=True)
-        emb.add_field(name="👑 Admin (20+)", value="`$help admin`", inline=True)
-        emb.add_field(name="🎮 Games (10)", value="`$help games`", inline=True)
-        emb.add_field(name="🎭 Fun & Utility", value="`$help fun`", inline=True)
-        emb.add_field(name="🤖 Smart Chat", value="Mention `@Bot` or write `MID` in chat", inline=False)
-        emb.set_footer(text="Status: $help | 24/7 Active")
-        await ctx.send(embed=emb)
+async def help_cmd(ctx):
+    emb = discord.Embed(
+        title="🤖 MID Discord Master Control Panel",
+        description="Niche dropdown menu se category select karo saare commands ek hi jagah dekhne ke liye!",
+        color=0x00ffff
+    )
+    emb.add_field(name="✨ Key Highlights", value="• Dropdown Help Menu\n• R.O.T.I Style Button Tickets\n• Friendly Hinglish Chat (`MID`)\n• Custom Tags & Nick Manager", inline=False)
+    emb.set_thumbnail(url=bot.user.display_avatar.url)
+    emb.set_footer(text="MID Bot 24/7 Active • Powered by Render")
     
-    elif category.lower() == "mod":
-        await ctx.send("🛡️ **Moderation Commands:** `$ban`, `$unban`, `$kick`, `$mute`, `$unmute`, `$warn`, `$warnings`, `$clearwarns`, `$purge`, `$slowmode`, `$lock`, `$unlock`, `$addrole`, `$removerole`")
-    
-    elif category.lower() == "admin":
-        await ctx.send("👑 **Admin Commands:** `$nuke`, `$setwelcome`, `$setgoodbye`, `$setautorole`, `$setlogs`, `$poll`, `$embed`, `$serverlock`, `$serverunlock`, `$announcement`, `$botnick`, `$say`, `$createchannel`, `$deletechannel`, `$createrole`, `$deleterole`, `$massrole`, `$ticketsetup`, `$openticket`, `$closeticket`, `$dmall`")
-    
-    elif category.lower() == "games":
-        await ctx.send("🎮 **Games Commands:** `$roll`, `$toss`, `$rps`, `$slots`, `$guess`, `$8ball`, `$dice`, `$coinflip`, `$mathquiz`, `$fasttype`")
-    
-    elif category.lower() == "fun":
-        await ctx.send("🎭 **Fun & Utility:** `$ping`, `$avatar`, `$userinfo`, `$serverinfo`, `$afk`, `$hack`, `$chat`")
+    await ctx.send(embed=emb, view=HelpView())
 
 # ================= 🚀 RUNNER =================
 if __name__ == "__main__":
@@ -581,4 +427,4 @@ if __name__ == "__main__":
     if token:
         bot.run(token, reconnect=True)
     else:
-        print("❌ Error: DISCORD_TOKEN Environment variable not found!")
+        print("❌ Error: DISCORD_TOKEN Environment variable missing!")
