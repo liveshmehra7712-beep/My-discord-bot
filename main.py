@@ -435,5 +435,5 @@ async def support(ctx): await ctx.send("🛠️ Support Server: Reach out to own
 keep_alive()
 
 # Purani line (bot.run('...')) ko hata kar ye likhein:
-bot.run(os.environ.get("MTU1MjIxNzA0NTEzODAxODMyNA.GWWNny.FZQ89k5WEeAYcf-x3eU-tb94Ixof8-nCWANCys"))
+bot.run(os.environ.get("DISCORD_TOKEN"))
 
