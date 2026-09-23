@@ -434,5 +434,6 @@ async def support(ctx): await ctx.send("🛠️ Support Server: Reach out to own
 # Start Web Server & Bot
 keep_alive()
 
-# ⚠️ YAHAN APNA REAL DISCORD BOT TOKEN PASTE KAREIN
-bot.run('MTU1MjIxNzA0NTEzODAxODMyNA.GWWNny.FZQ89k5WEeAYcf-x3eU-tb94Ixof8-nCWANCys')
+# Purani line (bot.run('...')) ko hata kar ye likhein:
+bot.run(os.environ.get("MTU1MjIxNzA0NTEzODAxODMyNA.GWWNny.FZQ89k5WEeAYcf-x3eU-tb94Ixof8-nCWANCys"))
+
