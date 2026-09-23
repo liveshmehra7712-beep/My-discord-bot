@@ -1,676 +1,434 @@
 import os
-import sys
-import json
-import time
 import random
 import asyncio
 import sqlite3
-import datetime
-from datetime import datetime, timedelta
-from flask import Flask
-from threading import Thread
-
+import logging
+import threading
+from datetime import datetime, timezone, timedelta
 import discord
-from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
+from flask import Flask
 
-# ===================================================================
-# 1. FLASK KEEP-ALIVE SERVER (24/7 Deployment on Render/VPS)
-# ===================================================================
-app = Flask(__name__)
+# ---------------------------------------------------------
+# CONFIGURATION & LOGGING
+# ---------------------------------------------------------
+TOKEN = os.getenv('DISCORD_TOKEN', 'YOUR_DISCORD_BOT_TOKEN_HERE')
+DEFAULT_PREFIX = '!'
+DB_PATH = os.getenv('DATABASE_PATH', 'bot_data.db')
+PORT = int(os.getenv('PORT', '10000'))
 
-@app.route('/')
-def home():
-    return "Bot Engine with 300+ Commands & AI is Online 24/7!"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+log = logging.getLogger('ProBotEngine')
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-
-# ===================================================================
-# 2. PERSISTENT SQLITE DATABASE ENGINE
-# ===================================================================
-DB_FILE = "bot_engine.db"
+# ---------------------------------------------------------
+# DATABASE ENGINE (SQLite WAL Mode)
+# ---------------------------------------------------------
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.row_factory = sqlite3.Row
+db.execute('PRAGMA journal_mode=WAL')
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    # Moderation & Warnings
-    c.execute('''CREATE TABLE IF NOT EXISTS warnings 
-                 (guild_id INTEGER, user_id INTEGER, reason TEXT, case_id INTEGER PRIMARY KEY AUTOINCREMENT)''')
-    # AFK Tracker
-    c.execute('''CREATE TABLE IF NOT EXISTS afk_users 
-                 (user_id INTEGER PRIMARY KEY, reason TEXT)''')
-    # Leveling System
-    c.execute('''CREATE TABLE IF NOT EXISTS user_levels 
-                 (guild_id INTEGER, user_id INTEGER, xp INTEGER, level INTEGER, PRIMARY KEY (guild_id, user_id))''')
-    # Economy System
-    c.execute('''CREATE TABLE IF NOT EXISTS economy 
-                 (guild_id INTEGER, user_id INTEGER, wallet INTEGER, bank INTEGER, PRIMARY KEY (guild_id, user_id))''')
-    # Dynamic Tags
-    c.execute('''CREATE TABLE IF NOT EXISTS custom_tags 
-                 (guild_id INTEGER, tag_name TEXT, content TEXT, PRIMARY KEY (guild_id, tag_name))''')
-    # Tickets
-    c.execute('''CREATE TABLE IF NOT EXISTS tickets 
-                 (guild_id INTEGER, channel_id INTEGER, user_id INTEGER, status TEXT)''')
-    # Server Configuration
-    c.execute('''CREATE TABLE IF NOT EXISTS server_config 
-                 (guild_id INTEGER PRIMARY KEY, prefix TEXT, log_channel INTEGER, welcome_channel INTEGER)''')
-    conn.commit()
-    conn.close()
+    with db:
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id INTEGER PRIMARY KEY,
+                prefix TEXT DEFAULT '!',
+                mod_log_channel INTEGER,
+                welcome_channel INTEGER,
+                autorole_id INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                user_id INTEGER,
+                mod_id INTEGER,
+                reason TEXT,
+                timestamp TEXT
+            );
+            CREATE TABLE IF NOT EXISTS economy (
+                guild_id INTEGER,
+                user_id INTEGER,
+                wallet INTEGER DEFAULT 0,
+                bank INTEGER DEFAULT 0,
+                PRIMARY KEY(guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS levels (
+                guild_id INTEGER,
+                user_id INTEGER,
+                xp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 0,
+                PRIMARY KEY(guild_id, user_id)
+            );
+        ''')
 
 init_db()
 
-# ===================================================================
-# 3. BOT INITIALIZATION & SETUP
-# ===================================================================
+def get_prefix(bot, message):
+    if not message.guild:
+        return DEFAULT_PREFIX
+    cursor = db.cursor()
+    cursor.execute('SELECT prefix FROM guild_settings WHERE guild_id = ?', (message.guild.id,))
+    row = cursor.fetchone()
+    return row['prefix'] if row and row['prefix'] else DEFAULT_PREFIX
+
+# ---------------------------------------------------------
+# BOT INITIALIZATION & FLASK KEEP-ALIVE
+# ---------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-intents.presences = True
+intents.guilds = True
 
-bot = commands.Bot(command_prefix="$", intents=intents, help_command=None)
-bot_start_time = datetime.utcnow()
+bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None, case_insensitive=True)
+bot.db = db
 
-# Active MID chat channels dictionary: {channel_id: expiration_timestamp}
-mid_active_channels = {}
+app = Flask(__name__)
 
-# ===================================================================
-# 4. CONTEXTUAL ENGLISH AI CHATBOT LOGIC
-# ===================================================================
-def generate_english_ai_response(content):
-    text = content.lower().strip()
-    
-    # Greetings & Salutations
-    if text in ["hi", "hello", "hey", "yo", "sup", "heyy"]:
-        return random.choice([
-            "Hey! How's it going?",
-            "Hello there! How are you doing today?",
-            "Yo! What's up?",
-            "Hey! Hope you are having a great day!"
-        ])
-    
-    # Small Talk & Feelings
-    elif "how are you" in text or "how u doin" in text or "how r u" in text or "how are u" in text:
-        return random.choice([
-            "I'm doing great, thanks for asking! How about yourself?",
-            "Pretty good! Just hangin' around. How is your day going?",
-            "All good on my end! What are you up to?",
-            "Doing awesome! Hope everything is good with you too."
-        ])
-    
-    # Activity & Work Enquiries
-    elif "what are you doing" in text or "what u doin" in text or "wbu" in text or "what r u doing" in text:
-        return random.choice([
-            "Not much, just chilling here and chatting. What about you?",
-            "Just keeping an eye on the server! Are you working on anything fun?",
-            "Nothing special at all! What are your plans for today?",
-            "Just hanging out online. Anything exciting happening with you?"
-        ])
-    
-    # Travel / Going Out Context
-    elif "went" in text or "going" in text or "ice" in text or "walk" in text or "chalog" in text or "out" in text:
-        return random.choice([
-            "Oh really? How was it out there?",
-            "Nah, I'm gonna stay right here! You go ahead though and enjoy!",
-            "That sounds like fun! Did you have a good time?",
-            "Where to? Tell me more about it!",
-            "Nice! Make sure you stay safe and have fun!"
-        ])
-    
-    # Explicit Language Corrections
-    elif "english" in text or "speak english" in text:
-        return "Understood! I am speaking strictly in English now. What would you like to talk about?"
-    
-    # Time / Yesterday / Past Context
-    elif "yesterday" in text or "kal" in text or "earlier" in text:
-        return random.choice([
-            "Oh yeah? What happened yesterday?",
-            "Sounds like you had a busy day! Tell me what went down.",
-            "Interesting! How did that turn out?",
-            "Really? Hope everything went smoothly!"
-        ])
-    
-    # Identity Queries
-    elif "who are you" in text or "your name" in text:
-        return "I'm your friendly AI assistant! I'm here to chat, help manage the server, and keep things fun."
+@app.route('/')
+def health():
+    return {"status": "online", "guilds": len(bot.guilds)}, 200
 
-    # General Contextual Fallback
-    else:
-        return random.choice([
-            "Oh I see! That's pretty cool. Tell me more about it!",
-            "Got it! So what else is new with you?",
-            "Fair enough! What are your plans for the rest of the day?",
-            "That sounds interesting! How are things going overall?",
-            "Nice! What have you been up to lately?",
-            "I hear you! Anything else on your mind today?"
-        ])
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-# ===================================================================
-# 5. BUTTON PAGINATOR FOR HELP MENU (300+ COMMANDS)
-# ===================================================================
-class HelpPaginatorView(discord.ui.View):
-    def __init__(self, author_id):
-        super().__init__(timeout=120)
-        self.author_id = author_id
-        self.current_page = 0
-        
-        self.pages = [
-            # Page 1: Overview
-            discord.Embed(
-                title="📚 Bot Architecture - Command Suite (Page 1/6)",
-                description="Welcome to the **300+ Command Engine**!\nUse the buttons below (`◀ Previous`, `Next ▶`) to navigate between modules.",
-                color=discord.Color.blue()
-            ).add_field(
-                name="📌 Modules Overview",
-                value="• **Page 1**: System Overview & AI Engine Info\n• **Page 2**: Moderation & Security (50+ Commands)\n• **Page 3**: Server Setup & Ticket Management (60+ Commands)\n• **Page 4**: Economy & Leveling Engine (50+ Commands)\n• **Page 5**: Utilities, Tags & System Info (70+ Commands)\n• **Page 6**: Fun, Games & Conversational AI (70+ Commands)",
-                inline=False
-            ).add_field(
-                name="💬 Conversational Human AI (`MID` Mode)",
-                value="Type **`MID`** in any chat channel to start a 15-minute natural English conversational session!",
-                inline=False
-            ),
-            
-            # Page 2: Moderation
-            discord.Embed(
-                title="🛡️ Moderation & Security Commands (Page 2/6)",
-                description="Prefix: `$` | Powerful security tools with strict hierarchy safety.",
-                color=discord.Color.red()
-            ).add_field(
-                name="🔨 Ban & Kick Tools",
-                value="`$ban`, `$unban`, `$softban`, `$tempban`, `$kick`, `$massban`, `$masskick`",
-                inline=False
-            ).add_field(
-                name="🔇 Mute & Timeout",
-                value="`$timeout`, `$untimeout`, `$mute`, `$unmute`, `$tempmute`",
-                inline=False
-            ).add_field(
-                name="⚠️ Warnings System",
-                value="`$warn`, `$warnings`, `$clearwarns`, `$delwarn`, `$warnescalate`",
-                inline=False
-            ).add_field(
-                name="🧹 Channel Hygiene",
-                value="`$clear`, `$purge`, `$clean`, `$slowmode`, `$lock`, `$unlock`, `$lockall`, `$unlockall`",
-                inline=False
-            ),
-            
-            # Page 3: Server Admin & Tickets
-            discord.Embed(
-                title="⚙️ Administration & Tickets (Page 3/6)",
-                description="Prefix: `$` | Complete server organization and support automation.",
-                color=discord.Color.green()
-            ).add_field(
-                name="🎫 Ticket Engine",
-                value="`$ticketsetup`, `$ticket`, `$close`, `$addmember`, `$removemember`, `$transcript`",
-                inline=False
-            ).add_field(
-                name="🎭 Roles & AutoMod",
-                value="`$autorole`, `$reactionrole`, `$buttonrole`, `$addrole`, `$removerole`, `$massrole`",
-                inline=False
-            ).add_field(
-                name="📢 Announcements & Welcomer",
-                value="`$setwelcome`, `$setgoodbye`, `$embed`, `$announce`, `$poll`, `$starboard`",
-                inline=False
-            ),
+threading.Thread(target=run_flask, daemon=True).start()
 
-            # Page 4: Economy & Leveling
-            discord.Embed(
-                title="💰 Economy & Leveling Ecosystem (Page 4/6)",
-                description="Prefix: `$` | Persistent SQLite-backed XP and banking systems.",
-                color=discord.Color.gold()
-            ).add_field(
-                name="💵 Economy Suite",
-                value="`$balance`, `$deposit`, `$withdraw`, `$daily`, `$work`, `$beg`, `$pay`, `$rob`, `$leaderboard`",
-                inline=False
-            ).add_field(
-                name="📈 XP & Ranking",
-                value="`$rank`, `$levels`, `$setxp`, `$addxp`, `$resetxp`, `$levelroles`",
-                inline=False
-            ),
-
-            # Page 5: Utilities
-            discord.Embed(
-                title="🛠️ Utility & Tag Systems (Page 5/6)",
-                description="Prefix: `$` | Handy everyday server tools.",
-                color=discord.Color.purple()
-            ).add_field(
-                name="ℹ️ Information Commands",
-                value="`$userinfo`, `$serverinfo`, `$botinfo`, `$roleinfo`, `$channelinfo`, `$avatar`, `$banner`, `$ping`",
-                inline=False
-            ).add_field(
-                name="🏷️ Tag Engine",
-                value="`$tag create`, `$tag delete`, `$tag list`, `$customcmd add`, `$customcmd delete`",
-                inline=False
-            ).add_field(
-                name="💤 Member Status & Tools",
-                value="`$afk`, `$reminder`, `$calculate`, `$weather`, `$translate`",
-                inline=False
-            ),
-
-            # Page 6: Fun & AI
-            discord.Embed(
-                title="🎉 Fun, Games & AI Chat (Page 6/6)",
-                description="Prefix: `$` | Entertainment and engagement modules.",
-                color=discord.Color.magenta()
-            ).add_field(
-                name="🎮 Fun Commands",
-                value="`$hack`, `$roll`, `$choose`, `$8ball`, `$meme`, `$joke`, `$coinflip`, `$rps`",
-                inline=False
-            ).add_field(
-                name="🤖 English Conversational AI",
-                value="Simply type **`MID`** in any chat channel! The bot will chat naturally in English like a human friend.",
-                inline=False
-            )
-        ]
-
-    async def update_page(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
-
-    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.primary)
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            return await interaction.response.send_message("❌ You are not allowed to control this menu!", ephemeral=True)
-        if self.current_page > 0:
-            self.current_page -= 1
-            await self.update_page(interaction)
-
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            return await interaction.response.send_message("❌ You are not allowed to control this menu!", ephemeral=True)
-        if self.current_page < len(self.pages) - 1:
-            self.current_page += 1
-            await self.update_page(interaction)
-
-# ===================================================================
-# 6. EVENT HANDLERS & AUTOMOD
-# ===================================================================
+# ---------------------------------------------------------
+# EVENTS ENGINE
+# ---------------------------------------------------------
 @bot.event
 async def on_ready():
-    print("==================================================")
-    print(f"✅ Bot Engine Online as: {bot.user} (ID: {bot.user.id})")
-    print(f"✅ SQLite Persistent Engine Loaded.")
-    print(f"✅ 300+ Command Architecture Ready.")
-    print("==================================================")
-    await bot.change_presence(activity=discord.Game(name="$help | Type 'MID' for AI Chat"))
+    log.info(f"Logged in as {bot.user.name} ({bot.user.id})")
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=f"{DEFAULT_PREFIX}help | Pro Engine"))
+
+@bot.event
+async def on_member_join(member):
+    cursor = db.cursor()
+    cursor.execute('SELECT welcome_channel, autorole_id FROM guild_settings WHERE guild_id = ?', (member.guild.id,))
+    row = cursor.fetchone()
+    if row:
+        if row['autorole_id']:
+            role = member.guild.get_role(row['autorole_id'])
+            if role:
+                try:
+                    await member.add_roles(role)
+                except Exception as e:
+                    log.error(f"Auto-role error: {e}")
+        if row['welcome_channel']:
+            channel = member.guild.get_channel(row['welcome_channel'])
+            if channel:
+                embed = discord.Embed(
+                    title="👋 Welcome to the Server!",
+                    description=f"Hey {member.mention}, welcome to **{member.guild.name}**!",
+                    color=discord.Color.green()
+                )
+                embed.set_thumbnail(url=member.display_avatar.url)
+                await channel.send(embed=embed)
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author.bot or not message.guild:
         return
 
-    # 1. AFK Status Auto-removal & Mention Notification
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT reason FROM afk_users WHERE user_id = ?", (message.author.id,))
-    afk_row = c.fetchone()
-    if afk_row:
-        c.execute("DELETE FROM afk_users WHERE user_id = ?", (message.author.id,))
-        conn.commit()
-        await message.channel.send(f"Welcome back {message.author.mention}! Your AFK status was removed.", delete_after=5)
+    # XP Leveling Logic
+    cursor = db.cursor()
+    cursor.execute('SELECT xp, level FROM levels WHERE guild_id = ? AND user_id = ?', (message.guild.id, message.author.id))
+    row = cursor.fetchone()
 
-    for mention in message.mentions:
-        c.execute("SELECT reason FROM afk_users WHERE user_id = ?", (mention.id,))
-        row = c.fetchone()
-        if row:
-            await message.channel.send(f"💤 **{mention.name}** is currently AFK: `{row[0]}`")
-    conn.close()
-
-    # 2. MID Human Conversational AI Mode
-    msg_clean = message.content.strip()
-    
-    if msg_clean.upper() == "MID":
-        mid_active_channels[message.channel.id] = datetime.utcnow() + timedelta(minutes=15)
-        embed = discord.Embed(
-            title="💬 Natural English AI Mode Activated!",
-            description="I am now active in this channel for 15 minutes. Let's talk in English!",
-            color=discord.Color.green()
-        )
-        await message.channel.send(embed=embed)
-        return
-
-    if message.channel.id in mid_active_channels and not message.content.startswith("$"):
-        if datetime.utcnow() < mid_active_channels[message.channel.id]:
-            response = generate_english_ai_response(message.content)
-            await message.channel.send(response)
-            return
+    if not row:
+        db.execute('INSERT INTO levels (guild_id, user_id, xp, level) VALUES (?, ?, ?, ?)', (message.guild.id, message.author.id, 15, 0))
+        db.commit()
+    else:
+        xp, level = row['xp'], row['level']
+        new_xp = xp + random.randint(10, 20)
+        xp_needed = 100 + (level * 50)
+        
+        if new_xp >= xp_needed:
+            new_level = level + 1
+            db.execute('UPDATE levels SET xp = ?, level = ? WHERE guild_id = ? AND user_id = ?', (new_xp - xp_needed, new_level, message.guild.id, message.author.id))
+            await message.channel.send(f"🎉 {message.author.mention} level up hoke **Level {new_level}** pe pahunch gaye!")
         else:
-            del mid_active_channels[message.channel.id]
-
-    # 3. Persistent Leveling System
-    if not message.content.startswith("$"):
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute("SELECT xp, level FROM user_levels WHERE guild_id=? AND user_id=?", (message.guild.id, message.author.id))
-        res = c.fetchone()
-        if res:
-            xp, lvl = res[0] + random.randint(10, 20), res[1]
-            if xp >= lvl * 100:
-                lvl += 1
-                await message.channel.send(f"🎉 Great job {message.author.mention}! You leveled up to **Level {lvl}**!")
-            c.execute("UPDATE user_levels SET xp=?, level=? WHERE guild_id=? AND user_id=?", (xp, lvl, message.guild.id, message.author.id))
-        else:
-            c.execute("INSERT INTO user_levels VALUES (?, ?, ?, ?)", (message.guild.id, message.author.id, 15, 1))
-        conn.commit()
-        conn.close()
+            db.execute('UPDATE levels SET xp = ? WHERE guild_id = ? AND user_id = ?', (new_xp, message.guild.id, message.author.id))
+        db.commit()
 
     await bot.process_commands(message)
 
-# ===================================================================
-# 7. ERROR HANDLER
-# ===================================================================
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        embed = discord.Embed(title="⛔ Access Denied", description="You don't have the permissions required for this command.", color=0xFF0000)
-        await ctx.send(embed=embed)
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"⚠️ Missing Argument! Usage: `{ctx.prefix}{ctx.command.qualified_name} {ctx.command.signature}`")
-    elif isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"⏳ Cooldown active! Please wait **{round(error.retry_after, 1)}s**.")
-    elif isinstance(error, commands.CommandNotFound):
-        pass
-    else:
-        print(f"Error in {ctx.command}: {error}")
+# Helper function for Mod Logs
+async def log_action(guild, embed):
+    cursor = db.cursor()
+    cursor.execute('SELECT mod_log_channel FROM guild_settings WHERE guild_id = ?', (guild.id,))
+    row = cursor.fetchone()
+    if row and row['mod_log_channel']:
+        channel = guild.get_channel(row['mod_log_channel'])
+        if channel:
+            await channel.send(embed=embed)
 
-# ===================================================================
-# 8. MODERATION MODULE
-# ===================================================================
+# ---------------------------------------------------------
+# ADMIN & CONFIGURATION COMMANDS
+# ---------------------------------------------------------
+@bot.command(name="setprefix", aliases=["prefix"])
+@commands.has_permissions(administrator=True)
+async def setprefix(ctx, new_prefix: str):
+    with db:
+        db.execute('''
+            INSERT INTO guild_settings (guild_id, prefix) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET prefix = excluded.prefix
+        ''', (ctx.guild.id, new_prefix))
+    await ctx.send(f"✅ Prefix change karke `{new_prefix}` kar diya hai.")
+
+@bot.command(name="setmodlog")
+@commands.has_permissions(administrator=True)
+async def setmodlog(ctx, channel: discord.TextChannel):
+    with db:
+        db.execute('''
+            INSERT INTO guild_settings (guild_id, mod_log_channel) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET mod_log_channel = excluded.mod_log_channel
+        ''', (ctx.guild.id, channel.id))
+    await ctx.send(f"📑 Mod logs channel set to {channel.mention}")
+
+@bot.command(name="setautorole")
+@commands.has_permissions(administrator=True)
+async def setautorole(ctx, role: discord.Role):
+    with db:
+        db.execute('''
+            INSERT INTO guild_settings (guild_id, autorole_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET autorole_id = excluded.autorole_id
+        ''', (ctx.guild.id, role.id))
+    await ctx.send(f"🎭 Auto-role set to **{role.name}**")
+
+@bot.command(name="setwelcome")
+@commands.has_permissions(administrator=True)
+async def setwelcome(ctx, channel: discord.TextChannel):
+    with db:
+        db.execute('''
+            INSERT INTO guild_settings (guild_id, welcome_channel) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET welcome_channel = excluded.welcome_channel
+        ''', (ctx.guild.id, channel.id))
+    await ctx.send(f"👋 Welcome channel set to {channel.mention}")
+
+# ---------------------------------------------------------
+# MODERATION COMMANDS (CARL & DYNO STYLE)
+# ---------------------------------------------------------
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
-async def ban(ctx, member: discord.Member, *, reason="No reason provided"):
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
-        return await ctx.send("❌ Hierarchy Error: Cannot ban a member with equal/higher role!")
+async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+    if ctx.author.top_role <= member.top_role and ctx.author.id != ctx.guild.owner_id:
+        return await ctx.send("❌ Apni top role se upar ya barabar wale member ko ban nahi kar sakte!")
+    
     await member.ban(reason=reason)
-    await ctx.send(f"🔨 Banned **{member.name}** | Reason: `{reason}`")
-
-@bot.command(name="unban")
-@commands.has_permissions(ban_members=True)
-async def unban(ctx, user_id: int, *, reason="No reason provided"):
-    user = await bot.fetch_user(user_id)
-    await ctx.guild.unban(user, reason=reason)
-    await ctx.send(f"✅ Successfully unbanned **{user.name}**.")
+    await ctx.send(f"🔨 **{member}** ko ban kar diya gaya hai. | Reason: {reason}")
+    
+    embed = discord.Embed(title="Member Banned", color=discord.Color.red())
+    embed.add_field(name="User", value=f"{member} ({member.id})")
+    embed.add_field(name="Moderator", value=ctx.author.mention)
+    embed.add_field(name="Reason", value=reason)
+    await log_action(ctx.guild, embed)
 
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
-async def kick(ctx, member: discord.Member, *, reason="No reason provided"):
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
-        return await ctx.send("❌ Hierarchy Error: Cannot kick this member.")
+async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+    if ctx.author.top_role <= member.top_role and ctx.author.id != ctx.guild.owner_id:
+        return await ctx.send("❌ Apni top role se upar wale ko kick nahi kar sakte!")
+    
     await member.kick(reason=reason)
-    await ctx.send(f"👢 Kicked **{member.name}** | Reason: `{reason}`")
+    await ctx.send(f"👢 **{member}** ko kick kar diya. | Reason: {reason}")
 
-@bot.command(name="timeout")
+@bot.command(name="mute", aliases=["timeout"])
 @commands.has_permissions(moderate_members=True)
-async def timeout(ctx, member: discord.Member, minutes: int, *, reason="No reason provided"):
-    await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await ctx.send(f"🔇 Timed out **{member.name}** for `{minutes}` minutes. Reason: `{reason}`")
+async def mute(ctx, member: discord.Member, duration: str = "10m", *, reason: str = "No reason provided"):
+    units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+    try:
+        seconds = int(duration[:-1]) * units[duration[-1].lower()]
+    except Exception:
+        return await ctx.send("❌ Sahi format use karo! Ex: `10s`, `15m`, `1h`, or `1d`")
+    
+    await member.timeout(timedelta(seconds=seconds), reason=reason)
+    await ctx.send(f"🔇 **{member}** ko `{duration}` ke liye mute kar diya. | Reason: {reason}")
 
-@bot.command(name="untimeout")
+@bot.command(name="unmute", aliases=["untimeout"])
 @commands.has_permissions(moderate_members=True)
-async def untimeout(ctx, member: discord.Member):
+async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
-    await ctx.send(f"🔊 Removed timeout for **{member.name}**.")
+    await ctx.send(f"🔊 **{member}** ko unmute kar diya.")
+
+@bot.command(name="purge", aliases=["clear"])
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, amount: int = 10):
+    deleted = await ctx.channel.purge(limit=amount + 1)
+    await ctx.send(f"🧹 Cleared `{len(deleted)-1}` messages.", delete_after=3)
 
 @bot.command(name="warn")
 @commands.has_permissions(manage_messages=True)
-async def warn(ctx, member: discord.Member, *, reason="No reason provided"):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO warnings (guild_id, user_id, reason) VALUES (?, ?, ?)", (ctx.guild.id, member.id, reason))
-    conn.commit()
-    c.execute("SELECT COUNT(*) FROM warnings WHERE guild_id=? AND user_id=?", (ctx.guild.id, member.id))
-    warns = c.fetchone()[0]
-    conn.close()
-    await ctx.send(f"⚠️ Warned **{member.mention}** | Total Warnings: `{warns}` | Reason: `{reason}`")
+async def warn(ctx, member: discord.Member, *, reason: str):
+    with db:
+        db.execute(
+            'INSERT INTO warnings (guild_id, user_id, mod_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)',
+            (ctx.guild.id, member.id, ctx.author.id, reason, datetime.now(timezone.utc).isoformat())
+        )
+    await ctx.send(f"⚠️ **{member}** ko warn diya gaya: {reason}")
 
-@bot.command(name="warnings")
+@bot.command(name="warnings", aliases=["warns"])
 async def warnings(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT case_id, reason FROM warnings WHERE guild_id=? AND user_id=?", (ctx.guild.id, member.id))
-    rows = c.fetchall()
-    conn.close()
+    target = member or ctx.author
+    cursor = db.cursor()
+    cursor.execute('SELECT reason, timestamp FROM warnings WHERE guild_id = ? AND user_id = ?', (ctx.guild.id, target.id))
+    rows = cursor.fetchall()
+    
     if not rows:
-        return await ctx.send(f"✅ **{member.name}** has 0 active warnings.")
-    desc = "\n".join([f"• **Case #{r[0]}**: {r[1]}" for r in rows])
-    embed = discord.Embed(title=f"Warnings for {member.name}", description=desc, color=0xFFA500)
+        return await ctx.send(f"✅ **{target.display_name}** ke paas koi warning nahi hai.")
+    
+    embed = discord.Embed(title=f"Warnings for {target.display_name}", color=discord.Color.gold())
+    for idx, row in enumerate(rows, 1):
+        embed.add_field(name=f"Warning #{idx}", value=f"**Reason:** {row['reason']}\n**Date:** {row['timestamp'][:10]}", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="clearwarns")
-@commands.has_permissions(administrator=True)
-async def clearwarns(ctx, member: discord.Member):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM warnings WHERE guild_id=? AND user_id=?", (ctx.guild.id, member.id))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"🧹 Cleared all warnings for **{member.name}**.")
+# ---------------------------------------------------------
+# ECONOMY SYSTEM
+# ---------------------------------------------------------
+def get_eco_acc(guild_id, user_id):
+    cursor = db.cursor()
+    cursor.execute('SELECT wallet, bank FROM economy WHERE guild_id = ? AND user_id = ?', (guild_id, user_id))
+    row = cursor.fetchone()
+    if not row:
+        db.execute('INSERT INTO economy (guild_id, user_id, wallet, bank) VALUES (?, ?, 0, 0)', (guild_id, user_id))
+        db.commit()
+        return 0, 0
+    return row['wallet'], row['bank']
 
-@bot.command(name="clear", aliases=["purge"])
-@commands.has_permissions(manage_messages=True)
-async def clear(ctx, amount: int = 5):
-    if amount < 1 or amount > 100:
-        return await ctx.send("⚠️ Enter a number between 1 and 100.")
-    deleted = await ctx.channel.purge(limit=amount + 1)
-    msg = await ctx.send(f"🧹 Cleared `{len(deleted)-1}` messages.")
-    await asyncio.sleep(3)
-    await msg.delete()
+def update_eco_acc(guild_id, user_id, w_delta=0, b_delta=0):
+    w, b = get_eco_acc(guild_id, user_id)
+    db.execute('UPDATE economy SET wallet = MAX(0, wallet + ?), bank = MAX(0, bank + ?) WHERE guild_id = ? AND user_id = ?', (w_delta, b_delta, guild_id, user_id))
+    db.commit()
 
-@bot.command(name="slowmode")
-@commands.has_permissions(manage_channels=True)
-async def slowmode(ctx, seconds: int):
-    await ctx.channel.edit(slowmode_delay=seconds)
-    await ctx.send(f"⏱️ Slowmode set to `{seconds}` seconds.")
-
-@bot.command(name="lock")
-@commands.has_permissions(manage_channels=True)
-async def lock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-    await ctx.send("🔒 Channel locked.")
-
-@bot.command(name="unlock")
-@commands.has_permissions(manage_channels=True)
-async def unlock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-    await ctx.send("🔓 Channel unlocked.")
-
-# ===================================================================
-# 9. ECONOMY & RANKING MODULE
-# ===================================================================
 @bot.command(name="balance", aliases=["bal"])
-async def balance(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT wallet, bank FROM economy WHERE guild_id=? AND user_id=?", (ctx.guild.id, member.id))
-    res = c.fetchone()
-    conn.close()
-    wallet, bank = res if res else (0, 0)
-    embed = discord.Embed(title=f"💰 Balance - {member.name}", color=discord.Color.gold())
-    embed.add_field(name="Wallet", value=f"`${wallet}`", inline=True)
-    embed.add_field(name="Bank", value=f"`${bank}`", inline=True)
-    embed.add_field(name="Total", value=f"`${wallet + bank}`", inline=False)
+async def balance(ctx, target: discord.Member = None):
+    target = target or ctx.author
+    w, b = get_eco_acc(ctx.guild.id, target.id)
+    embed = discord.Embed(title=f"💰 Balance - {target.display_name}", color=discord.Color.gold())
+    embed.add_field(name="Wallet", value=f"`${w}`")
+    embed.add_field(name="Bank", value=f"`${b}`")
+    embed.add_field(name="Total", value=f"`${w + b}`")
     await ctx.send(embed=embed)
-
-@bot.command(name="daily")
-@commands.cooldown(1, 86400, commands.BucketType.user)
-async def daily(ctx):
-    reward = 500
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT wallet, bank FROM economy WHERE guild_id=? AND user_id=?", (ctx.guild.id, ctx.author.id))
-    res = c.fetchone()
-    wallet = res[0] if res else 0
-    c.execute("INSERT OR REPLACE INTO economy VALUES (?, ?, ?, ?)", (ctx.guild.id, ctx.author.id, wallet + reward, res[1] if res else 0))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"💵 You claimed your daily reward of **${reward}**!")
 
 @bot.command(name="work")
 @commands.cooldown(1, 3600, commands.BucketType.user)
 async def work(ctx):
-    earned = random.randint(100, 350)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT wallet, bank FROM economy WHERE guild_id=? AND user_id=?", (ctx.guild.id, ctx.author.id))
-    res = c.fetchone()
-    wallet = res[0] if res else 0
-    c.execute("INSERT OR REPLACE INTO economy VALUES (?, ?, ?, ?)", (ctx.guild.id, ctx.author.id, wallet + earned, res[1] if res else 0))
-    conn.commit()
-    conn.close()
-    jobs = ["Programmer", "Graphic Designer", "Discord Moderator", "Chef", "Gamer"]
-    await ctx.send(f"💼 Worked as a **{random.choice(jobs)}** and earned **${earned}**!")
+    earned = random.randint(50, 250)
+    update_eco_acc(ctx.guild.id, ctx.author.id, w_delta=earned)
+    await ctx.send(f"💼 Aapne kaam karke `${earned}` kamaye!")
 
-@bot.command(name="rank")
-async def rank(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT xp, level FROM user_levels WHERE guild_id=? AND user_id=?", (ctx.guild.id, member.id))
-    res = c.fetchone()
-    conn.close()
-    xp, level = res if res else (0, 1)
-    embed = discord.Embed(title=f"⭐ Rank - {member.name}", color=discord.Color.blue())
-    embed.add_field(name="Level", value=f"`{level}`", inline=True)
-    embed.add_field(name="XP Progress", value=f"`{xp} / {level * 100}`", inline=True)
-    await ctx.send(embed=embed)
+@work.error
+async def work_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Thoda rest karo! Wapas kaam `{round(error.retry_after / 60)}` mins baad kar sakte ho.")
 
-# ===================================================================
-# 10. UTILITY & TAG COMMANDS
-# ===================================================================
-@bot.command(name="ping")
-async def ping(ctx):
-    await ctx.send(f"🏓 Pong! Latency: **{round(bot.latency * 1000)}ms**")
+@bot.command(name="deposit", aliases=["dep"])
+async def deposit(ctx, amount: str):
+    w, _ = get_eco_acc(ctx.guild.id, ctx.author.id)
+    val = w if amount.lower() == "all" else int(amount)
+    if val > w or val <= 0:
+        return await ctx.send("❌ Valid amount daalo jo wallet me ho!")
+    update_eco_acc(ctx.guild.id, ctx.author.id, w_delta=-val, b_delta=val)
+    await ctx.send(f"🏦 `${val}` bank me deposit kar diye.")
 
-@bot.command(name="botinfo")
-async def botinfo(ctx):
-    uptime = datetime.utcnow() - bot_start_time
-    embed = discord.Embed(title="🤖 System Engine Diagnostics", color=discord.Color.blue())
-    embed.add_field(name="Uptime", value=f"`{str(uptime).split('.')[0]}`", inline=True)
-    embed.add_field(name="Ping", value=f"`{round(bot.latency * 1000)}ms`", inline=True)
-    embed.add_field(name="Servers", value=f"`{len(bot.guilds)}`", inline=True)
-    embed.add_field(name="Python Engine", value=f"`{sys.version.split()[0]}`", inline=True)
-    await ctx.send(embed=embed)
+@bot.command(name="withdraw", aliases=["with"])
+async def withdraw(ctx, amount: str):
+    _, b = get_eco_acc(ctx.guild.id, ctx.author.id)
+    val = b if amount.lower() == "all" else int(amount)
+    if val > b or val <= 0:
+        return await ctx.send("❌ Bank me utna paisa nahi hai!")
+    update_eco_acc(ctx.guild.id, ctx.author.id, w_delta=val, b_delta=-val)
+    await ctx.send(f"💵 `${val}` bank se nikal liye.")
 
-@bot.command(name="userinfo")
+# ---------------------------------------------------------
+# UTILITY & FUN COMMANDS
+# ---------------------------------------------------------
+@bot.command(name="rank", aliases=["level", "xp"])
+async def rank(ctx, target: discord.Member = None):
+    target = target or ctx.author
+    cursor = db.cursor()
+    cursor.execute('SELECT xp, level FROM levels WHERE guild_id = ? AND user_id = ?', (ctx.guild.id, target.id))
+    row = cursor.fetchone()
+    
+    xp = row['xp'] if row else 0
+    level = row['level'] if row else 0
+    xp_needed = 100 + (level * 50)
+    
+    await ctx.send(f"📊 **{target.display_name}** | Level `{level}` | XP `{xp}/{xp_needed}`")
+
+@bot.command(name="userinfo", aliases=["ui"])
 async def userinfo(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    embed = discord.Embed(title=f"User Details - {member.name}", color=discord.Color.green())
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="User ID", value=f"`{member.id}`", inline=True)
-    embed.add_field(name="Joined Server", value=f"`{member.joined_at.strftime('%Y-%m-%d')}`", inline=True)
-    embed.add_field(name="Account Created", value=f"`{member.created_at.strftime('%Y-%m-%d')}`", inline=True)
+    target = member or ctx.author
+    roles = [role.mention for role in target.roles if role != ctx.guild.default_role]
+    embed = discord.Embed(title=f"User Info - {target}", color=target.color)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="ID", value=target.id, inline=True)
+    embed.add_field(name="Joined Server", value=target.joined_at.strftime("%Y-%m-%d"), inline=True)
+    embed.add_field(name="Created Account", value=target.created_at.strftime("%Y-%m-%d"), inline=True)
+    embed.add_field(name=f"Roles ({len(roles)})", value=" ".join(roles) if roles else "None", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="serverinfo")
+@bot.command(name="serverinfo", aliases=["si"])
 async def serverinfo(ctx):
     guild = ctx.guild
-    embed = discord.Embed(title=f"Server Overview - {guild.name}", color=discord.Color.purple())
+    embed = discord.Embed(title=f"Server Info - {guild.name}", color=discord.Color.blue())
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
-    embed.add_field(name="Total Members", value=f"`{guild.member_count}`", inline=True)
-    embed.add_field(name="Guild Owner", value=f"{guild.owner.mention if guild.owner else 'N/A'}", inline=True)
-    embed.add_field(name="Roles Count", value=f"`{len(guild.roles)}`", inline=True)
+    embed.add_field(name="Owner", value=guild.owner.mention, inline=True)
+    embed.add_field(name="Members", value=guild.member_count, inline=True)
+    embed.add_field(name="Channels", value=len(guild.channels), inline=True)
+    embed.add_field(name="Roles", value=len(guild.roles), inline=True)
+    embed.add_field(name="Created On", value=guild.created_at.strftime("%Y-%m-%d"), inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="avatar")
-async def avatar(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    embed = discord.Embed(title=f"{member.name}'s Avatar", color=discord.Color.blue())
-    embed.set_image(url=member.display_avatar.url)
-    await ctx.send(embed=embed)
+@bot.command(name="ping")
+async def ping(ctx):
+    await ctx.send(f"🏓 Pong! Latency: `{round(bot.latency * 1000)}ms`")
 
-@bot.command(name="afk")
-async def afk(ctx, *, reason="AFK"):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO afk_users VALUES (?, ?)", (ctx.author.id, reason))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"💤 {ctx.author.mention}, your AFK status is set: `{reason}`")
+@bot.command(name="8ball")
+async def eightball(ctx, *, question: str):
+    responses = ["Haan zaroor!", "Bilkul nahi.", "Shayad...", "Aapka waqt bura chal raha hai.", "Pakka nahi keh sakta."]
+    await ctx.send(f"🎱 **Sawaal:** {question}\n**Jawaab:** {random.choice(responses)}")
 
-@bot.command(name="tag")
-async def tag(ctx, action: str = None, name: str = None, *, content: str = None):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    if action == "create" and name and content:
-        c.execute("INSERT OR REPLACE INTO custom_tags VALUES (?, ?, ?)", (ctx.guild.id, name.lower(), content))
-        conn.commit()
-        await ctx.send(f"✅ Tag `{name}` created successfully!")
-    elif action == "delete" and name:
-        c.execute("DELETE FROM custom_tags WHERE guild_id=? AND tag_name=?", (ctx.guild.id, name.lower()))
-        conn.commit()
-        await ctx.send(f"🗑️ Tag `{name}` deleted.")
-    elif action == "list":
-        c.execute("SELECT tag_name FROM custom_tags WHERE guild_id=?", (ctx.guild.id,))
-        tags = c.fetchall()
-        if not tags:
-            await ctx.send("🏷️ No tags configured for this server.")
-        else:
-            tag_list = ", ".join([f"`{t[0]}`" for t in tags])
-            await ctx.send(f"🏷️ **Server Tags:** {tag_list}")
-    elif action:
-        c.execute("SELECT content FROM custom_tags WHERE guild_id=? AND tag_name=?", (ctx.guild.id, action.lower()))
-        res = c.fetchone()
-        if res:
-            await ctx.send(res[0])
-        else:
-            await ctx.send("❌ Tag not found!")
-    else:
-        await ctx.send("⚠️ Usage: `$tag create <name> <content>` | `$tag delete <name>` | `$tag list` | `$tag <name>`")
-    conn.close()
-
-# ===================================================================
-# 11. FUN COMMANDS
-# ===================================================================
-@bot.command(name="hack")
-async def hack(ctx, member: discord.Member):
-    msg = await ctx.send(f"💻 Injecting exploit script into {member.name}'s system...")
-    await asyncio.sleep(1.5)
-    ip = f"192.168.{random.randint(1,255)}.{random.randint(1,255)}"
-    await msg.edit(content=f"🔍 IP Address Located: `{ip}`")
-    await asyncio.sleep(1.5)
-    token = f"MTA{random.randint(1000,9999)}.xG.{random.randint(10000,99999)}"
-    embed = discord.Embed(title=f"☠️ Fake Hack Executed for {member.name}", color=0x00FF00)
-    embed.add_field(name="IP Address", value=f"`{ip}`", inline=True)
-    embed.add_field(name="Token", value=f"`{token}`", inline=True)
-    await msg.edit(content="✅ **System Breached! (Fun Command)**", embed=embed)
-
-@bot.command(name="roll")
-async def roll(ctx, sides: int = 6):
-    result = random.randint(1, sides)
-    await ctx.send(f"🎲 You rolled a **{result}** (out of {sides})!")
-
-@bot.command(name="choose")
-async def choose(ctx, *options):
-    if len(options) < 2:
-        return await ctx.send("⚠️ Please provide at least 2 options! Usage: `$choose option1 option2`")
-    choice = random.choice(options)
-    await ctx.send(f"🤔 I choose: **{choice}**")
-
-# ===================================================================
-# 12. MASTER PAGINATED HELP COMMAND
-# ===================================================================
+# ---------------------------------------------------------
+# HELP COMMAND
+# ---------------------------------------------------------
 @bot.command(name="help")
 async def help_command(ctx):
-    view = HelpPaginatorView(ctx.author.id)
-    await ctx.send(embed=view.pages[0], view=view)
+    p = get_prefix(bot, ctx.message)
+    embed = discord.Embed(
+        title="🤖 Bot Command Menu",
+        description=f"Current Guild Prefix: `{p}`\nUse `{p}<command>` to run.",
+        color=discord.Color.blurple()
+    )
+    
+    embed.add_field(
+        name="🛠️ Setup (Admin)",
+        value=f"`{p}setprefix`, `{p}setmodlog`, `{p}setautorole`, `{p}setwelcome`",
+        inline=False
+    )
+    embed.add_field(
+        name="🛡️ Moderation",
+        value=f"`{p}ban`, `{p}kick`, `{p}mute`, `{p}unmute`, `{p}purge`, `{p}warn`, `{p}warnings`",
+        inline=False
+    )
+    embed.add_field(
+        name="💰 Economy & Levels",
+        value=f"`{p}bal`, `{p}work`, `{p}dep`, `{p}with`, `{p}rank`",
+        inline=False
+    )
+    embed.add_field(
+        name="📊 Utility & Fun",
+        value=f"`{p}userinfo`, `{p}serverinfo`, `{p}ping`, `{p}8ball`, `{p}help`",
+        inline=False
+    )
+    await ctx.send(embed=embed)
 
-# ===================================================================
-# 13. MAIN ENTRY POINT
-# ===================================================================
-if __name__ == "__main__":
-    keep_alive()
-
-    TOKEN = os.environ.get("DISCORD_TOKEN")
-    if not TOKEN:
-        print("❌ CRITICAL ERROR: 'DISCORD_TOKEN' Environment Variable missing!")
-        sys.exit(1)
-
-    bot.run(TOKEN)
+# ---------------------------------------------------------
+# RUN BOT
+# ---------------------------------------------------------
+if __name__ == '__main__':
+    if TOKEN == 'YOUR_DISCORD_BOT_TOKEN_HERE':
+        log.error("DISCORD_TOKEN set nahi hai!")
+    else:
+        bot.run(TOKEN)
